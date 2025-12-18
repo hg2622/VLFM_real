@@ -120,6 +120,8 @@ def calculate_vfov(hfov: float, width: int, height: int) -> float:
     return vfov
 
 
+import numpy as np
+
 def within_fov_cone(
     cone_origin: np.ndarray,
     cone_angle: float,
@@ -127,26 +129,50 @@ def within_fov_cone(
     cone_range: float,
     points: np.ndarray,
 ) -> np.ndarray:
-    """Checks if points are within a cone of a given origin, angle, fov, and range.
+    """
+    Return the subset of `points` that lie within a 2D cone (in the XY plane).
 
     Args:
-        cone_origin (np.ndarray): The origin of the cone.
-        cone_angle (float): The angle of the cone in radians.
-        cone_fov (float): The field of view of the cone in radians.
-        cone_range (float): The range of the cone.
-        points (np.ndarray): The points to check.
+        cone_origin: (2,) array, origin (x, y) of the cone.
+        cone_angle:  float, central angle of the cone in radians (heading).
+        cone_fov:    float, total field of view (radians).
+        cone_range:  float, max radial distance.
+        points:      (..., 2) or (..., 3) array of points; we use only x,y.
 
     Returns:
-        np.ndarray: The subarray of points that are within the cone.
+        Subarray of `points` that are within the cone.
     """
-    cone_fov=2*np.pi
-    directions = points[:, :3] - cone_origin
+
+    cone_fov= 2* np.pi
+    pts = np.asarray(points, dtype=np.float32)
+
+    # Handle (N,3) by dropping z, or keep (N,2) as-is.
+    if pts.ndim == 1:
+        pts = pts.reshape(1, -1)
+    if pts.shape[1] >= 2:
+        pts_xy = pts[:, :2]
+    else:
+        raise ValueError(f"within_fov_cone expects at least 2D points, got shape {pts.shape}")
+
+    origin = np.asarray(cone_origin, dtype=np.float32).reshape(1, 2)
+
+    # Vector from origin to each point
+    directions = pts_xy - origin
+
+    # Distances and angles
     dists = np.linalg.norm(directions, axis=1)
     angles = np.arctan2(directions[:, 1], directions[:, 0])
+
+    # Smallest signed difference between each angle and cone_angle in [-pi, pi]
     angle_diffs = np.mod(angles - cone_angle + np.pi, 2 * np.pi) - np.pi
 
-    mask = np.logical_and(dists <= cone_range, np.abs(angle_diffs) <= cone_fov / 2)
-    return points[mask]
+    # Cone membership
+    in_range = dists <= cone_range
+    in_fov   = np.abs(angle_diffs) <= (cone_fov / 2.0)
+    mask     = in_range & in_fov
+
+    return pts[mask]
+
 
 
 def convert_to_global_frame(agent_pos: np.ndarray, agent_yaw: float, local_pos: np.ndarray) -> np.ndarray:

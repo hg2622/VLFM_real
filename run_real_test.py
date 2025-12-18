@@ -291,7 +291,7 @@ def main(args=None):
     step_idx = 0
 
     def maybe_save_visualizations(step: int):
-        if step % VIS_SAVE_PERIOD != 0:
+        if step % 1 != 0:
             return
 
         try:

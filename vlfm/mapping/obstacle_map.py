@@ -173,7 +173,7 @@ class ObstacleMap(BaseMap):
             f"[OBSTACLE_MAP.update_map] new_explored_nonzero={new_nonzero}"
         )
 
-        new_explored_area = cv2.dilate(new_explored_area, np.ones((3, 3), np.uint8), iterations=1)
+        # new_explored_area = cv2.dilate(new_explored_area, np.ones((3, 3), np.uint8), iterations=1)
         self.explored_area[new_explored_area > 0] = 1
         self.explored_area[self._navigable_map == 0] = 0
         total_explored = np.count_nonzero(self.explored_area)

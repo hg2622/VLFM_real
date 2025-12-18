@@ -220,9 +220,10 @@ class BaseObjectNavPolicy(BasePolicy):
 
     def _get_object_detections(self, img: np.ndarray) -> ObjectDetections:
         target_classes = self._target_object.split("|")
-        has_coco = any(c in COCO_CLASSES for c in target_classes) and self._load_yolo
+        # print(f"Target classes: {target_classes}")
+        has_coco = any(c in COCO_CLASSES for c in target_classes)
         has_non_coco = any(c not in COCO_CLASSES for c in target_classes)
-
+        print(has_coco, has_non_coco)
         detections = (
             self._coco_object_detector.predict(img)
             if has_coco
@@ -231,12 +232,15 @@ class BaseObjectNavPolicy(BasePolicy):
         detections.filter_by_class(target_classes)
         det_conf_threshold = self._coco_threshold if has_coco else self._non_coco_threshold
         detections.filter_by_conf(det_conf_threshold)
-
-        if has_coco and has_non_coco:
+        # print(f"Detections after first filter: {detections.num_detections}")
+        if  has_non_coco:
             # Retry with non-coco object detector
             detections = self._object_detector.predict(img, caption=self._non_coco_caption)
             detections.filter_by_class(target_classes)
             detections.filter_by_conf(self._non_coco_threshold)
+
+        print(f"Detections after second filter: {detections.num_detections}")
+        print(f"Detections: {detections.phrases}")
 
         return detections
 
@@ -311,18 +315,20 @@ class BaseObjectNavPolicy(BasePolicy):
         detections = self._get_object_detections(rgb)
         height, width = rgb.shape[:2]
         self._object_masks = np.zeros((height, width), dtype=np.uint8)
-        if np.array_equal(depth, np.ones_like(depth)) and detections.num_detections > 0:
-            depth = self._infer_depth(rgb, min_depth, max_depth)
-            obs = list(self._observations_cache["object_map_rgbd"][0])
-            obs[1] = depth
-            self._observations_cache["object_map_rgbd"][0] = tuple(obs)
+        # if np.array_equal(depth, np.ones_like(depth)) and detections.num_detections > 0:
+        #     print("[DEBUG] Inferring depth since input depth is all ones.")
+        #     depth = self._infer_depth(rgb, min_depth, max_depth)
+        #     obs = list(self._observations_cache["object_map_rgbd"][0])
+        #     obs[1] = depth
+        #     self._observations_cache["object_map_rgbd"][0] = tuple(obs)
         for idx in range(len(detections.logits)):
             bbox_denorm = detections.boxes[idx] * np.array([width, height, width, height])
             object_mask = self._mobile_sam.segment_bbox(rgb, bbox_denorm.tolist())
 
             # If we are using vqa, then use the BLIP2 model to visually confirm whether
             # the contours are actually correct.
-
+            print("[DEBUG] after update_map, has_object?",
+              self._object_map.has_object(self._target_object))
             if self._use_vqa:
                 contours, _ = cv2.findContours(object_mask, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
                 annotated_rgb = cv2.drawContours(rgb.copy(), contours, -1, (255, 0, 0), 2)
@@ -348,7 +354,8 @@ class BaseObjectNavPolicy(BasePolicy):
 
         cone_fov = get_fov(fx, depth.shape[1])
         self._object_map.update_explored(tf_camera_to_episodic, max_depth, cone_fov)
-
+        print("[DEBUG] after update_explored, has_object?",
+          self._object_map.has_object(self._target_object))
         return detections
 
     def _cache_observations(self, observations: "TensorDict") -> None:
