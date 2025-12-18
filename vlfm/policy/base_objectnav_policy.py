@@ -232,7 +232,7 @@ class BaseObjectNavPolicy(BasePolicy):
         det_conf_threshold = self._coco_threshold if has_coco else self._non_coco_threshold
         detections.filter_by_conf(det_conf_threshold)
 
-        if has_coco and has_non_coco and detections.num_detections == 0:
+        if has_coco and has_non_coco:
             # Retry with non-coco object detector
             detections = self._object_detector.predict(img, caption=self._non_coco_caption)
             detections.filter_by_class(target_classes)

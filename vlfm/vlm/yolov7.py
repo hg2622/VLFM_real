@@ -117,6 +117,8 @@ class YOLOv7Client:
     def predict(self, image_numpy: np.ndarray) -> ObjectDetections:
         response = send_request(self.url, image=image_numpy)
         detections = ObjectDetections.from_json(response, image_source=image_numpy)
+        print(f"[YOLOv7Client] received {detections.num_detections} detections")
+        print(detections)
 
         return detections
 

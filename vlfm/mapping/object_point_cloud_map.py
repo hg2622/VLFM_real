@@ -41,10 +41,10 @@ class ObjectPointCloudMap:
         fy: float,
     ) -> None:
         """Updates the object map with the latest information from the agent."""
-        local_cloud = self._extract_object_cloud(depth_img, object_mask, min_depth, max_depth, fx, fy)
+        local_cloud = get_point_cloud(depth_img, object_mask)
         if len(local_cloud) == 0:
             return
-
+        
         # For second-class, bad detections that are too offset or out of range, we
         # assign a random number to the last column of its point cloud that can later
         # be used to identify which points came from the same detection.

@@ -1,3 +1,4 @@
+# vlfm/mapping/obstacle_map.py
 # Copyright (c) 2023 Boston Dynamics AI Institute LLC. All rights reserved.
 
 from typing import Any, Union
@@ -45,6 +46,16 @@ class ObstacleMap(BaseMap):
         kernel_size = int(kernel_size) + (int(kernel_size) % 2 == 0)
         self._navigable_kernel = np.ones((kernel_size, kernel_size), np.uint8)
 
+        print(
+            "[OBSTACLE_MAP.__init__] size=", size,
+            "ppm=", self.pixels_per_meter,
+            "area_thresh_m2=", area_thresh,
+            "area_thresh_px=", self._area_thresh_in_pixels,
+            "min_h=", min_height,
+            "max_h=", max_height,
+            "hole_area_thresh=", hole_area_thresh,
+        )
+
     def reset(self) -> None:
         super().reset()
         self._navigable_map.fill(0)
@@ -67,95 +78,122 @@ class ObstacleMap(BaseMap):
         """
         Adds all obstacles from the current view to the map. Also updates the area
         that the robot has explored so far.
-
-        Args:
-            depth (np.ndarray): The depth image to use for updating the object map. It
-                is normalized to the range [0, 1] and has a shape of (height, width).
-
-            tf_camera_to_episodic (np.ndarray): The transformation matrix from the
-                camera to the episodic coordinate frame.
-            min_depth (float): The minimum depth value (in meters) of the depth image.
-            max_depth (float): The maximum depth value (in meters) of the depth image.
-            fx (float): The focal length of the camera in the x direction.
-            fy (float): The focal length of the camera in the y direction.
-            topdown_fov (float): The field of view of the depth camera projected onto
-                the topdown map.
-            explore (bool): Whether to update the explored area.
-            update_obstacles (bool): Whether to update the obstacle map.
         """
-        if update_obstacles:
+        # fov_deg = np.rad2deg(topdown_fov)
+        fov_deg = 360
+        print(
+            f"[OBSTACLE_MAP.update_map] update_obstacles={update_obstacles} "
+            f"explore={explore} min_d={min_depth:.2f} max_d={max_depth:.2f} "
+            f"fov_deg={fov_deg:.1f}"
+        )
+
+        if update_obstacles and depth is not None:
+            # --- depth preprocessing ---
             if self._hole_area_thresh == -1:
                 filled_depth = depth.copy()
                 filled_depth[depth == 0] = 1.0
             else:
                 filled_depth = fill_small_holes(depth, self._hole_area_thresh)
+
             scaled_depth = filled_depth * (max_depth - min_depth) + min_depth
             mask = scaled_depth < max_depth
-            point_cloud_camera_frame = get_point_cloud(scaled_depth, mask, fx, fy)
+
+            valid_depth_px = np.count_nonzero(depth > 0)
+            scaled_valid = np.count_nonzero(mask)
+
+            print(
+                f"[OBSTACLE_MAP.update_map] depth>0={valid_depth_px} "
+                f"scaled<max={scaled_valid}"
+            )
+
+            # --- point cloud + height filter ---
+            point_cloud_camera_frame = get_point_cloud(scaled_depth, mask)
+            if point_cloud_camera_frame.shape[0] == 0:
+                print("[OBSTACLE_MAP.update_map] point_cloud_camera_frame is empty")
             point_cloud_episodic_frame = transform_points(tf_camera_to_episodic, point_cloud_camera_frame)
-            obstacle_cloud = filter_points_by_height(point_cloud_episodic_frame, self._min_height, self._max_height)
+            obstacle_cloud = filter_points_by_height(
+                point_cloud_episodic_frame,
+                self._min_height,
+                self._max_height,
+            )
 
-            # Populate topdown map with obstacle locations
-            xy_points = obstacle_cloud[:, :2]
-            pixel_points = self._xy_to_px(xy_points)
-            self._map[pixel_points[:, 1], pixel_points[:, 0]] = 1
+            obs_pixels = obstacle_cloud.shape[0]
+            print(f"[OBSTACLE_MAP.update_map] obstacle_cloud points={obs_pixels}")
 
-            # Update the navigable area, which is an inverse of the obstacle map after a
-            # dilation operation to accommodate the robot's radius.
+            if obs_pixels > 0:
+                # Populate topdown map with obstacle locations
+                xy_points = obstacle_cloud[:, :2]
+                pixel_points = self._xy_to_px(xy_points)
+                # Clip just in case
+                pixel_points[:, 0] = np.clip(pixel_points[:, 0], 0, self._map.shape[1] - 1)
+                pixel_points[:, 1] = np.clip(pixel_points[:, 1], 0, self._map.shape[0] - 1)
+                self._map[pixel_points[:, 1], pixel_points[:, 0]] = 1
+
+            # Update the navigable area: inverse of obstacle map after dilation
             self._navigable_map = 1 - cv2.dilate(
                 self._map.astype(np.uint8),
                 self._navigable_kernel,
                 iterations=1,
             ).astype(bool)
 
+            nav_free = np.count_nonzero(self._navigable_map)
+            print(f"[OBSTACLE_MAP.update_map] nav_free={nav_free}")
+
         if not explore:
             return
 
-        # Update the explored area
+        # ---------- Update the explored area ----------
         agent_xy_location = tf_camera_to_episodic[:2, 3]
         agent_pixel_location = self._xy_to_px(agent_xy_location.reshape(1, 2))[0]
+        agent_px_clipped = np.array(
+            [
+                np.clip(agent_pixel_location[0], 0, self._map.shape[1] - 1),
+                np.clip(agent_pixel_location[1], 0, self._map.shape[0] - 1),
+            ],
+            dtype=int,
+        )
+
+        print(
+            f"[OBSTACLE_MAP.update_map] agent_xy={agent_xy_location} "
+            f"agent_px_raw={agent_pixel_location} "
+            f"agent_px_clipped={agent_px_clipped}"
+        )
+
         new_explored_area = reveal_fog_of_war(
             top_down_map=self._navigable_map.astype(np.uint8),
-            current_fog_of_war_mask=np.zeros_like(self._map, dtype=np.uint8),
-            current_point=agent_pixel_location[::-1],
+            current_fog_of_war_mask=self.explored_area.astype(np.uint8),
+            current_point=agent_px_clipped[::-1],  # (row, col)
             current_angle=-extract_yaw(tf_camera_to_episodic),
-            fov=np.rad2deg(topdown_fov),
+            fov=fov_deg,
             max_line_len=max_depth * self.pixels_per_meter,
         )
+
+        new_nonzero = np.count_nonzero(new_explored_area)
+        print(
+            f"[OBSTACLE_MAP.update_map] new_explored_nonzero={new_nonzero}"
+        )
+
         new_explored_area = cv2.dilate(new_explored_area, np.ones((3, 3), np.uint8), iterations=1)
         self.explored_area[new_explored_area > 0] = 1
         self.explored_area[self._navigable_map == 0] = 0
-        contours, _ = cv2.findContours(
-            self.explored_area.astype(np.uint8),
-            cv2.RETR_EXTERNAL,
-            cv2.CHAIN_APPROX_SIMPLE,
+        total_explored = np.count_nonzero(self.explored_area)
+        print(
+            f"[OBSTACLE_MAP.update_map] total_explored={total_explored}"
         )
-        if len(contours) > 1:
-            min_dist = np.inf
-            best_idx = 0
-            for idx, cnt in enumerate(contours):
-                dist = cv2.pointPolygonTest(cnt, tuple([int(i) for i in agent_pixel_location]), True)
-                if dist >= 0:
-                    best_idx = idx
-                    break
-                elif abs(dist) < min_dist:
-                    min_dist = abs(dist)
-                    best_idx = idx
-            new_area = np.zeros_like(self.explored_area, dtype=np.uint8)
-            cv2.drawContours(new_area, contours, best_idx, 1, -1)  # type: ignore
-            self.explored_area = new_area.astype(bool)
 
-        # Compute frontier locations
+        # ---------- Compute frontier locations ----------
         self._frontiers_px = self._get_frontiers()
         if len(self._frontiers_px) == 0:
             self.frontiers = np.array([])
         else:
             self.frontiers = self._px_to_xy(self._frontiers_px)
 
+        print(
+            f"[OBSTACLE_MAP.update_map] frontiers_px_count={len(self._frontiers_px)}"
+        )
+
     def _get_frontiers(self) -> np.ndarray:
         """Returns the frontiers of the map."""
-        # Dilate the explored area slightly to prevent small gaps between the explored
-        # area and the unnavigable area from being detected as frontiers.
         explored_area = cv2.dilate(
             self.explored_area.astype(np.uint8),
             np.ones((5, 5), np.uint8),
@@ -171,13 +209,9 @@ class ObstacleMap(BaseMap):
     def visualize(self) -> np.ndarray:
         """Visualizes the map."""
         vis_img = np.ones((*self._map.shape[:2], 3), dtype=np.uint8) * 255
-        # Draw explored area in light green
         vis_img[self.explored_area == 1] = (200, 255, 200)
-        # Draw unnavigable areas in gray
         vis_img[self._navigable_map == 0] = self.radius_padding_color
-        # Draw obstacles in black
         vis_img[self._map == 1] = (0, 0, 0)
-        # Draw frontiers in blue (200, 0, 0)
         for frontier in self._frontiers_px:
             cv2.circle(vis_img, tuple([int(i) for i in frontier]), 5, (200, 0, 0), 2)
 

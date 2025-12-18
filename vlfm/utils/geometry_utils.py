@@ -54,6 +54,38 @@ def get_rotation_matrix(angle: float, ndims: int = 2) -> np.ndarray:
         )
     else:
         raise ValueError("ndims must be 2 or 3")
+def get_point_cloud(depth: np.ndarray, mask: np.ndarray) -> np.ndarray:
+    """
+    Equirectangular (360°) depth → 3D point cloud in camera frame.
+
+    Args:
+        depth: metric depth (H,W) in meters, equirectangular panorama.
+        mask:  binary mask (H,W) where >0 means 'use this pixel'.
+    Returns:
+        (N,3) points in camera frame (x,y,z), z-up, y-forward, x-right.
+    """
+    if depth.ndim == 3:
+        depth = depth[:, :, 0]
+    H, W = depth.shape
+
+    valid = (depth > 0) & (mask > 0)
+    v_idx, u_idx = np.where(valid)
+    if v_idx.size == 0:
+        return np.empty((0, 3), np.float32)
+
+    r = depth[v_idx, u_idx].astype(np.float32)
+
+    theta_full, phi_full = _equirect_angles(H, W)
+    theta = theta_full[v_idx, u_idx]
+    phi   = phi_full[v_idx, u_idx]
+
+    cphi = np.cos(phi)
+    x = r * cphi * np.cos(theta)
+    y = r * cphi * np.sin(theta)
+    z = r * np.sin(phi)
+
+    points = np.stack([x, y, z], axis=-1).astype(np.float32)
+    return points
 
 
 def wrap_heading(theta: float) -> float:
@@ -107,6 +139,7 @@ def within_fov_cone(
     Returns:
         np.ndarray: The subarray of points that are within the cone.
     """
+    cone_fov=2*np.pi
     directions = points[:, :3] - cone_origin
     dists = np.linalg.norm(directions, axis=1)
     angles = np.arctan2(directions[:, 1], directions[:, 0])
@@ -211,9 +244,17 @@ def transform_points(transformation_matrix: np.ndarray, points: np.ndarray) -> n
 
     # Remove the added homogeneous coordinate and divide by the last coordinate
     return transformed_points[:, :3] / transformed_points[:, 3:]
+def _equirect_angles(H: int, W: int):
+    u = np.arange(W, dtype=np.float32) + 0.5
+    v = np.arange(H, dtype=np.float32) + 0.5
+    uu, vv = np.meshgrid(u, v, indexing="xy")
+
+    theta = -((uu / W) * (2.0 * np.pi) - np.pi)  # yaw in [-pi, pi]
+    phi   = (0.5 - (vv / H)) * np.pi            # pitch in [-pi/2, +pi/2]
+    return theta, phi
 
 
-def get_point_cloud(depth_image: np.ndarray, mask: np.ndarray, fx: float, fy: float) -> np.ndarray:
+def get_point_cloud_old(depth_image: np.ndarray, mask: np.ndarray, fx: float, fy: float) -> np.ndarray:
     """Calculates the 3D coordinates (x, y, z) of points in the depth image based on
     the horizontal field of view (HFOV), the image width and height, the depth values,
     and the pixel x and y coordinates.
