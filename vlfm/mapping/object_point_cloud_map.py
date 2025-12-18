@@ -27,8 +27,7 @@ class ObjectPointCloudMap:
         self.last_target_coord = None
 
     def has_object(self, target_class: str) -> bool:
-        print(f"[ObjectPointCloudMap.has_object] Checking for {target_class}")
-        print(len(self.clouds[target_class]) if target_class in self.clouds else 0)
+     
         return target_class in self.clouds and len(self.clouds[target_class]) > 0
 
     def update_map(
@@ -43,6 +42,7 @@ class ObjectPointCloudMap:
         fy: float,
     ) -> None:
         """Updates the object map with the latest information from the agent."""
+        print(f"[ObjectPointCloudMap] Updating map for object '{object_name}'")
         local_cloud = get_point_cloud(depth_img, object_mask)
         if len(local_cloud) == 0:
             return
@@ -67,9 +67,7 @@ class ObjectPointCloudMap:
         curr_position = tf_camera_to_episodic[:3, 3]
         closest_point = self._get_closest_point(global_cloud, curr_position)
         dist = np.linalg.norm(closest_point[:3] - curr_position)
-        if dist < 1.0:
-            # Object is too close to trust as a valid object
-            return
+
 
         if object_name in self.clouds:
             self.clouds[object_name] = np.concatenate((self.clouds[object_name], global_cloud), axis=0)

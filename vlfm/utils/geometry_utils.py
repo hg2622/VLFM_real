@@ -130,48 +130,50 @@ def within_fov_cone(
     points: np.ndarray,
 ) -> np.ndarray:
     """
-    Return the subset of `points` that lie within a 2D cone (in the XY plane).
+    Return the subset of `points` that lie inside a 2D cone in the XY-plane.
 
     Args:
-        cone_origin: (2,) array, origin (x, y) of the cone.
-        cone_angle:  float, central angle of the cone in radians (heading).
-        cone_fov:    float, total field of view (radians).
-        cone_range:  float, max radial distance.
-        points:      (..., 2) or (..., 3) array of points; we use only x,y.
+        cone_origin: (3,) or (2,) array giving the cone origin in world coords.
+                     We use only the first 2 components (x, y).
+        cone_angle:  Cone center direction (radians) in the XY plane.
+        cone_fov:    Field of view (radians). Use 2π for 360°.
+        cone_range:  Maximum distance from origin in meters.
+        points:      (..., D) array of points. The first 3 columns must be x,y,z.
+                     Any extra columns (e.g., range_id) are preserved.
 
     Returns:
-        Subarray of `points` that are within the cone.
+        Sub-array of `points` that are inside the cone.
     """
-
-    cone_fov= 2* np.pi
     pts = np.asarray(points, dtype=np.float32)
-
-    # Handle (N,3) by dropping z, or keep (N,2) as-is.
     if pts.ndim == 1:
-        pts = pts.reshape(1, -1)
-    if pts.shape[1] >= 2:
-        pts_xy = pts[:, :2]
+        pts = pts[None, :]
+
+    # Take xyz from the first 3 columns; preserve full row later
+    xyz = pts[:, :3]
+
+    # Use only x,y for cone geometry
+    origin = np.asarray(cone_origin, dtype=np.float32).reshape(-1)[:2]    # (2,)
+    dirs_xy = xyz[:, :2] - origin[None, :]                               # (N, 2)
+
+    # Radial distance in XY-plane
+    dists = np.linalg.norm(dirs_xy, axis=1)
+
+    # Start with range mask
+    within_range = dists <= cone_range
+
+    # If FOV is basically 360°, no angle filtering
+    if cone_fov >= 2 * np.pi - 1e-6:
+        mask = within_range
     else:
-        raise ValueError(f"within_fov_cone expects at least 2D points, got shape {pts.shape}")
-
-    origin = np.asarray(cone_origin, dtype=np.float32).reshape(1, 2)
-
-    # Vector from origin to each point
-    directions = pts_xy - origin
-
-    # Distances and angles
-    dists = np.linalg.norm(directions, axis=1)
-    angles = np.arctan2(directions[:, 1], directions[:, 0])
-
-    # Smallest signed difference between each angle and cone_angle in [-pi, pi]
-    angle_diffs = np.mod(angles - cone_angle + np.pi, 2 * np.pi) - np.pi
-
-    # Cone membership
-    in_range = dists <= cone_range
-    in_fov   = np.abs(angle_diffs) <= (cone_fov / 2.0)
-    mask     = in_range & in_fov
+        # Angle of each point relative to +x axis
+        angles = np.arctan2(dirs_xy[:, 1], dirs_xy[:, 0])
+        # Smallest signed difference between point angle and cone center
+        angle_diffs = (angles - cone_angle + np.pi) % (2 * np.pi) - np.pi
+        within_angle = np.abs(angle_diffs) <= (cone_fov / 2.0)
+        mask = within_range & within_angle
 
     return pts[mask]
+
 
 
 
