@@ -158,18 +158,16 @@ class RealityMixin:
             frontiers = np.array([])
         else:
             # All but last: update obstacles only
-            for depth, tf, min_depth, max_depth, fx, fy, topdown_fov in depths[:-1]:
-                self._obstacle_map.update_map(
-                    depth,
-                    tf,
-                    min_depth,
-                    max_depth,
-                    fx,
-                    fy,
-                    topdown_fov,
-                    explore=True,
-                    update_obstacles=True,
-                )
+            depth, tf, min_d, max_d, fx, fy = depths[-1]
+            self._obstacle_map.update_map(
+                depth,
+                tf,
+                update_obstacles=True,
+                explore=True,
+                min_depth=min_d,
+                max_depth=max_d,
+                fov_deg=360.0,   # or from your config
+            )
 
             # Last one: update explored area + frontiers only
             # depth, tf, min_depth, max_depth, fx, fy, topdown_fov = depths[-1]
