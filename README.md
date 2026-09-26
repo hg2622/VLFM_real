@@ -35,6 +35,69 @@ Understanding how humans leverage semantic knowledge to navigate unfamiliar envi
 
 ## :hammer_and_wrench: Installation
 
+### Python 3.12 (ROS bridge / real robot)
+If your ROS setup requires Python 3.12, use this path:
+
+```bash
+conda_env_name=vlfm_ros312
+conda create -n $conda_env_name python=3.12 -y
+conda activate $conda_env_name
+
+# Install VLFM core + real robot dependencies
+pip install -e .[reality]
+```
+
+Notes:
+- `rclpy`, `cv_bridge`, and ROS message packages should come from your ROS installation (apt/overlay), not from pip.
+- Habitat simulation dependencies in this repository are pinned to older versions and may require a separate legacy environment.
+
+To recreate the validated ROS Python 3.12 setup from this repo:
+
+```bash
+conda env create -f environment.ros312.yml
+conda activate vlfm_ros312
+```
+
+
+Use these commands in your env if you need to reproduce:
+conda activate vlfm_ros312
+pip install --no-build-isolation git+https://github.com/IDEA-Research/GroundingDINO.git@eeba084341aaa454ce13cb32fa7fd9282fc73a67
+pip install --no-build-isolation git+https://github.com/ChaoningZhang/MobileSAM.git
+git clone https://github.com/WongKinYiu/yolov7.git /home/all/VLFM_real/yolov7_src
+
+If you use an RTX 50-series GPU (e.g., `sm_120`) and want GroundingDINO to run on GPU,
+rebuild GroundingDINO with the repository helper script:
+
+```bash
+bash scripts/install_groundingdino_cuda.sh vlfm_ros312
+```
+
+This script:
+- installs `cuda-nvcc=12.8` into the target conda env,
+- applies a small CUDA extension compatibility patch for newer torch versions,
+- rebuilds and reinstalls GroundingDINO with CUDA extension support.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 ### Getting Started
 Create the conda environment:
 ```bash

@@ -68,6 +68,7 @@ class BaseObjectNavPolicy(BasePolicy):
         if use_vqa:
             self._vqa = BLIP2Client(port=int(os.environ.get("BLIP2_PORT", "12185")))
         self._pointnav_policy = WrappedPointNavResNetPolicy(pointnav_policy_path)
+        self._torch_device = self._pointnav_policy.device
         self._object_map: ObjectPointCloudMap = ObjectPointCloudMap(erosion_size=object_map_erosion_size)
         self._depth_image_shape = tuple(depth_image_shape)
         self._pointnav_stop_radius = pointnav_stop_radius
@@ -256,7 +257,7 @@ class BaseObjectNavPolicy(BasePolicy):
             stop (bool): Whether to stop if we are close enough to the goal.
 
         """
-        masks = torch.tensor([self._num_steps != 0], dtype=torch.bool, device="cuda")
+        masks = torch.tensor([self._num_steps != 0], dtype=torch.bool, device=self._torch_device)
         if not np.array_equal(goal, self._last_goal):
             if np.linalg.norm(goal - self._last_goal) > 0.1:
                 self._pointnav_policy.reset()
@@ -265,7 +266,7 @@ class BaseObjectNavPolicy(BasePolicy):
         robot_xy = self._observations_cache["robot_xy"]
         heading = self._observations_cache["robot_heading"]
         rho, theta = rho_theta(robot_xy, heading, goal)
-        rho_theta_tensor = torch.tensor([[rho, theta]], device="cuda", dtype=torch.float32)
+        rho_theta_tensor = torch.tensor([[rho, theta]], device=self._torch_device, dtype=torch.float32)
         obs_pointnav = {
             "depth": image_resize(
                 self._observations_cache["nav_depth"],

@@ -11,12 +11,68 @@ import torch
 
 import rclpy
 from rclpy.node import Node
+from geometry_msgs.msg import Point
+from std_msgs.msg import ColorRGBA
+from visualization_msgs.msg import Marker
 
 import cv2
 
 from ros_camera_bridge import ROSCameraBridge, ROSWaypointPub
 from vlfm.policy.reality_policies import RealityITMPolicyV2
 from omegaconf import OmegaConf
+
+try:
+    from sensor_msgs_py import point_cloud2 as pc2
+except Exception:
+    pc2 = None
+
+
+class ROSTargetPointCloudPub:
+    """Publishes target object point cloud as red RViz Marker points."""
+
+    def __init__(self, node: Node, topic: str = "/vlfm/target_point_cloud", frame_id: str = "map"):
+        self.node = node
+        self.topic = topic
+        self.frame_id = frame_id
+        self.pub = node.create_publisher(Marker, topic, 10)
+
+    def publish(self, points_xyz: np.ndarray) -> None:
+        marker = Marker()
+        marker.header.frame_id = self.frame_id
+        marker.header.stamp = self.node.get_clock().now().to_msg()
+        marker.ns = "vlfm"
+        marker.id = 1
+        marker.type = Marker.POINTS
+        marker.action = Marker.ADD
+        marker.pose.orientation.w = 1.0
+
+        # Point size in meters in RViz
+        marker.scale.x = 0.05
+        marker.scale.y = 0.05
+
+        # Per-marker color as solid red
+        marker.color = ColorRGBA(r=1.0, g=0.0, b=0.0, a=1.0)
+
+        marker.points = []
+        for p in np.asarray(points_xyz, dtype=np.float32):
+            if p.shape[0] < 3:
+                continue
+            pt = Point()
+            pt.x = float(p[0])
+            pt.y = float(p[1])
+            pt.z = float(p[2])
+            marker.points.append(pt)
+
+        self.pub.publish(marker)
+
+    def clear(self) -> None:
+        marker = Marker()
+        marker.header.frame_id = self.frame_id
+        marker.header.stamp = self.node.get_clock().now().to_msg()
+        marker.ns = "vlfm"
+        marker.id = 1
+        marker.action = Marker.DELETE
+        self.pub.publish(marker)
 
 # =======================================================
 #                    VISUALIZATION HELPERS
@@ -166,6 +222,45 @@ def pose_to_tf(position: np.ndarray, rot: np.quaternion) -> np.ndarray:
     return T
 
 
+def get_safe_torch_device() -> torch.device:
+    """Return a usable torch device, falling back to CPU if CUDA runtime is unusable."""
+    if torch.cuda.is_available():
+        try:
+            _ = torch.zeros(1, device="cuda")
+            return torch.device("cuda")
+        except Exception as e:
+            print(f"[VLFM] CUDA unavailable at runtime, falling back to CPU: {e}")
+    return torch.device("cpu")
+
+
+def pointcloud2_to_xyz(scan_msg: Any) -> np.ndarray:
+    """Converts a ROS PointCloud2 message to an Nx3 float32 array."""
+    if scan_msg is None or pc2 is None:
+        return np.empty((0, 3), dtype=np.float32)
+    try:
+        pts_iter = pc2.read_points(scan_msg, field_names=("x", "y", "z"), skip_nans=True)
+        pts_list = []
+        for p in pts_iter:
+            try:
+                # Common case: tuple/list/ndarray-like point record
+                x, y, z = float(p[0]), float(p[1]), float(p[2])
+            except Exception:
+                if hasattr(p, "x") and hasattr(p, "y") and hasattr(p, "z"):
+                    # namedtuple-like records
+                    x, y, z = float(p.x), float(p.y), float(p.z)
+                else:
+                    # structured numpy scalar with named fields (can include padding)
+                    x, y, z = float(p["x"]), float(p["y"]), float(p["z"])
+            pts_list.append((x, y, z))
+
+        if len(pts_list) == 0:
+            return np.empty((0, 3), dtype=np.float32)
+        return np.asarray(pts_list, dtype=np.float32)
+    except Exception as e:
+        print(f"[VLFM] Failed to parse registered scan PointCloud2: {e}")
+        return np.empty((0, 3), dtype=np.float32)
+
+
 def build_vlfm_obs(ros_obs: Dict[str, Any], target_object: str = "chair") -> Optional[Dict[str, Any]]:
     """
     ros_obs is whatever ROSCameraBridge.get_obs(...) returns.
@@ -179,20 +274,27 @@ def build_vlfm_obs(ros_obs: Dict[str, Any], target_object: str = "chair") -> Opt
     depth_raw = ros_obs.get("depth", None)
     pos = ros_obs.get("position", None)
     rot = ros_obs.get("rotation", None)
+    scan_msg = ros_obs.get("scan", None)
 
     if rgb is None or depth_raw is None or pos is None or rot is None:
         return None
 
-    # ---- Interpret ROS depth as meters, normalize to [0,1] ----
+    # ---- Interpret ROS depth as meters ----
     depth_m = depth_raw.astype(np.float32)
+    depth_m = np.nan_to_num(depth_m, nan=0.0, posinf=0.0, neginf=0.0)
 
     # Configure your range here
     min_d = 0.1
     max_d = 5.0
 
-    depth_norm = (depth_m - min_d) / (max_d - min_d)
+    clipped_depth_m = np.clip(depth_m, min_d, max_d)
+    depth_norm = (clipped_depth_m - min_d) / (max_d - min_d)
     depth_norm = np.clip(depth_norm, 0.0, 1.0)
     depth_norm = np.nan_to_num(depth_norm, nan=0.0)
+
+    # Object map projection expects metric depth values (meters), not normalized depth.
+    object_depth_m = clipped_depth_m.copy()
+    object_depth_m[depth_m <= 0.0] = 0.0
 
     robot_xy = pos[:2]
     robot_heading = quat_to_yaw(rot)
@@ -212,6 +314,8 @@ def build_vlfm_obs(ros_obs: Dict[str, Any], target_object: str = "chair") -> Opt
         (depth_norm, tf_cam_to_world, min_d, max_d, fx, fy, fov),
     ]
 
+    scan_cloud = pointcloud2_to_xyz(scan_msg)
+
     obs = {
         "nav_depth": depth_norm,
         "robot_xy": robot_xy,
@@ -219,6 +323,8 @@ def build_vlfm_obs(ros_obs: Dict[str, Any], target_object: str = "chair") -> Opt
         "objectgoal": target_object,
 
         "obstacle_map_depths": obstacle_entries,
+        "obstacle_map_cloud": scan_cloud,
+        "obstacle_map_range": max_d,
 
         # For semantic value map (BLIP2)
         "value_map_rgbd": [
@@ -227,7 +333,7 @@ def build_vlfm_obs(ros_obs: Dict[str, Any], target_object: str = "chair") -> Opt
 
         # For object map (YOLO + SAM)
         "object_map_rgbd": [
-            (rgb, depth_norm, tf_cam_to_world, min_d, max_d, fx, fy)
+            (rgb, object_depth_m, tf_cam_to_world, min_d, max_d, fx, fy)
         ],
     }
 
@@ -247,7 +353,7 @@ def main(args=None):
     VIS_DIR = "vlfm_debug_vis"
     os.makedirs(VIS_DIR, exist_ok=True)
 
-    target_object = "chair"   # change as needed
+    target_object = "bed"   # change as needed
 
     # ---------------- ROS init + shared node ----------------
     rclpy.init(args=args)
@@ -276,6 +382,11 @@ def main(args=None):
         topic="/way_point",
         frame_id="map",
     )
+    target_cloud_pub = ROSTargetPointCloudPub(
+        node=shared_node,
+        topic="/vlfm/target_point_cloud",
+        frame_id="map",
+    )
 
     print("[VLFM] ROSCameraBridge and ROSWaypointPub initialized")
 
@@ -285,10 +396,11 @@ def main(args=None):
     print("[VLFM] RealityITMPolicyV2 loaded from config/experiments/reality.yaml")
 
     # (1,1) mask like in habitat baselines
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    device = get_safe_torch_device()
     mask = torch.zeros(1, 1, dtype=torch.bool, device=device)
 
     step_idx = 0
+    timeout_count = 0
 
     def maybe_save_visualizations(step: int):
         if step % 1 != 0:
@@ -315,11 +427,19 @@ def main(args=None):
             print(f"[VLFM] Visualization error at step {step}: {e}")
 
     def tick():
-        nonlocal mask, step_idx
+        nonlocal mask, step_idx, timeout_count
 
         step_idx += 1
 
-        ros = cam.get_obs(allow_spin=False)
+        try:
+            ros = cam.get_obs(allow_spin=False)
+            timeout_count = 0
+        except TimeoutError as e:
+            timeout_count += 1
+            if timeout_count == 1 or timeout_count % 10 == 0:
+                print(f"[VLFM] Waiting for synced ROS inputs: {e} (timeout #{timeout_count})")
+            return True
+
         if ros is None:
             return True
 
@@ -344,6 +464,13 @@ def main(args=None):
             gx, gy = nav_goal[:2]
             waypoint_pub.publish_xyz_ros([gx, gy, 0.0])
             print(f"[VLFM] Step {step_idx}: Published waypoint ({gx:.2f}, {gy:.2f})")
+
+        # Publish detected target object point cloud for RViz visualization
+        target_cloud = policy._policy_info.get("target_point_cloud", None)
+        if target_cloud is not None and len(target_cloud) > 0:
+            target_cloud_pub.publish(target_cloud)
+        else:
+            target_cloud_pub.clear()
 
         # Occasionally dump some debug vis
         maybe_save_visualizations(step_idx)

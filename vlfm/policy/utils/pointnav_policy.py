@@ -254,6 +254,23 @@ import torch
 from torch import Tensor
 
 
+def _get_safe_device(preferred: str | torch.device = "cuda") -> torch.device:
+    if isinstance(preferred, torch.device):
+        preferred_name = preferred.type
+    else:
+        preferred_name = preferred
+
+    if preferred_name == "cuda" and torch.cuda.is_available():
+        try:
+            _ = torch.zeros(1, device="cuda")
+            return torch.device("cuda")
+        except Exception as e:
+            print(f"[PointNavStub] CUDA unavailable at runtime, falling back to CPU: {e}")
+            return torch.device("cpu")
+
+    return torch.device("cpu")
+
+
 class WrappedPointNavResNetPolicy:
     """
     Minimal stand-in for the Habitat PointNav ResNet policy.
@@ -273,13 +290,8 @@ class WrappedPointNavResNetPolicy:
         ckpt_path: str | None = None,
         device: str | torch.device = "cuda",
     ) -> None:
-        # Choose a real torch.device, but don't touch any checkpoint.
-        if isinstance(device, str):
-            if torch.cuda.is_available():
-                device = torch.device(device)
-            else:
-                device = torch.device("cpu")
-        self.device: torch.device = device
+        # Choose a real, usable torch.device, but don't touch any checkpoint.
+        self.device: torch.device = _get_safe_device(device)
 
     # ---- API used by BaseObjectNavPolicy._reset() ----
     def reset(self) -> None:

@@ -86,6 +86,10 @@ def send_request(url: str, **kwargs: Any) -> dict:
 
 
 def _send_request(url: str, **kwargs: Any) -> dict:
+    # Control args for request behavior (not sent to model server payload)
+    request_timeout_s = float(kwargs.pop("request_timeout_s", os.environ.get("VLFM_REQUEST_TIMEOUT_S", 5.0)))
+    total_timeout_s = float(kwargs.pop("total_timeout_s", os.environ.get("VLFM_TOTAL_TIMEOUT_S", 120.0)))
+
     lockfiles_dir = "lockfiles"
     if not os.path.exists(lockfiles_dir):
         os.makedirs(lockfiles_dir)
@@ -133,7 +137,7 @@ def _send_request(url: str, **kwargs: Any) -> dict:
         start_time = time.time()
         while True:
             try:
-                resp = requests.post(url, headers=headers, json=payload, timeout=1)
+                resp = requests.post(url, headers=headers, json=payload, timeout=request_timeout_s)
                 if resp.status_code == 200:
                     result = resp.json()
                     break
@@ -144,8 +148,8 @@ def _send_request(url: str, **kwargs: Any) -> dict:
                 requests.exceptions.RequestException,
             ) as e:
                 print(e)
-                if time.time() - start_time > 20:
-                    raise Exception("Request timed out after 20 seconds")
+                if time.time() - start_time > total_timeout_s:
+                    raise Exception(f"Request timed out after {total_timeout_s} seconds")
 
         try:
             # Delete the lock file

@@ -147,19 +147,26 @@ class RealityMixin:
         """
         self._obstacle_map: ObstacleMap
 
-        # obstacle_map_depths: list of tuples
-        # (depth_norm, tf_cam_to_world, min_d, max_d, fx, fy, fov)
-        #
-        # We call update_map twice:
-        #  - first: explore=False, update_obstacles=True (obstacle integration)
-        #  - last:  explore=True,  update_obstacles=False (fog-of-war + frontiers)
-        depths = observations["obstacle_map_depths"]
-        if len(depths) == 0:
-            frontiers = np.array([])
+        scan_cloud = observations.get("obstacle_map_cloud", None)
+        if scan_cloud is not None and len(scan_cloud) > 0:
+            self._obstacle_map.update_map_from_global_cloud(
+                scan_cloud,
+                observations["robot_xy"],
+                observations["robot_heading"],
+                observations.get("obstacle_map_range", 5.0),
+                fov_deg=360.0,
+                explore=True,
+                update_obstacles=True,
+            )
+            frontiers = self._obstacle_map.frontiers
         else:
-            # All but last: update obstacles only
-            depth, tf, min_depth, max_depth, fx, fy, topdown_fov =depths[-1]
-            self._obstacle_map.update_map(
+            # Fallback path: obstacle map from depth projection
+            depths = observations["obstacle_map_depths"]
+            if len(depths) == 0:
+                frontiers = np.array([])
+            else:
+                depth, tf, min_depth, max_depth, fx, fy, topdown_fov = depths[-1]
+                self._obstacle_map.update_map(
                     depth,
                     tf,
                     min_depth,
@@ -170,33 +177,18 @@ class RealityMixin:
                     explore=True,
                     update_obstacles=True,
                 )
+                frontiers = self._obstacle_map.frontiers
 
-            # Last one: update explored area + frontiers only
-            # depth, tf, min_depth, max_depth, fx, fy, topdown_fov = depths[-1]
-            # self._obstacle_map.update_map(
-            #     depth,
-            #     tf,
-            #     min_depth,
-            #     max_depth,
-            #     fx,
-            #     fy,
-            #     topdown_fov,
-            #     explore=True,
-            #     update_obstacles=False,
-            # )
-
-            # Keep camera trajectory for visualization
-            self._obstacle_map.update_agent_traj(
-                observations["robot_xy"],
-                observations["robot_heading"],
-            )
-            frontiers = self._obstacle_map.frontiers
+        # Keep camera trajectory for visualization
+        self._obstacle_map.update_agent_traj(
+            observations["robot_xy"],
+            observations["robot_heading"],
+        )
 
         # nav_depth: used for internal pointnav
         height, width = observations["nav_depth"].shape
         nav_depth = torch.from_numpy(observations["nav_depth"]).reshape(1, height, width, 1)
-        device = "cuda" if torch.cuda.is_available() else "cpu"
-        nav_depth = nav_depth.to(device)
+        nav_depth = nav_depth.to(getattr(self, "_torch_device", torch.device("cpu")))
 
         self._observations_cache = {
             "frontier_sensor": frontiers,

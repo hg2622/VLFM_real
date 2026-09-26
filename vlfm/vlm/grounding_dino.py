@@ -1,5 +1,6 @@
 # Copyright (c) 2023 Boston Dynamics AI Institute LLC. All rights reserved.
 
+import os
 from typing import Optional
 
 import numpy as np
@@ -20,6 +21,47 @@ GROUNDING_DINO_WEIGHTS = "data/groundingdino_swint_ogc.pth"
 CLASSES = "chair . person . dog ."  # Default classes. Can be overridden at inference.
 
 
+def _get_safe_device() -> torch.device:
+    if torch.cuda.is_available():
+        try:
+            _ = torch.zeros(1, device="cuda")
+            return torch.device("cuda")
+        except Exception as e:
+            print(f"[GroundingDINO] CUDA unavailable at runtime, falling back to CPU: {e}")
+    return torch.device("cpu")
+
+
+def _resolve_config_path(config_path: str) -> str:
+    if os.path.exists(config_path):
+        return config_path
+    try:
+        import groundingdino
+
+        pkg_cfg = os.path.join(os.path.dirname(groundingdino.__file__), "config", "GroundingDINO_SwinT_OGC.py")
+        if os.path.exists(pkg_cfg):
+            return pkg_cfg
+    except Exception:
+        pass
+    return config_path
+
+
+def _patch_transformers_bert_compat() -> None:
+    """Compatibility shim for GroundingDINO with newer transformers builds."""
+    try:
+        from transformers.models.bert.modeling_bert import BertModel
+
+        if not hasattr(BertModel, "get_head_mask"):
+            def _get_head_mask(self, head_mask, num_hidden_layers, is_attention_chunked: bool = False):
+                if head_mask is None:
+                    return [None] * num_hidden_layers
+                return head_mask
+
+            BertModel.get_head_mask = _get_head_mask  # type: ignore[attr-defined]
+            print("[GroundingDINO] Applied transformers BertModel compatibility shim.")
+    except Exception as e:
+        print(f"[GroundingDINO] Could not apply transformers compatibility shim: {e}")
+
+
 class GroundingDINO:
     def __init__(
         self,
@@ -28,8 +70,12 @@ class GroundingDINO:
         caption: str = CLASSES,
         box_threshold: float = 0.35,
         text_threshold: float = 0.25,
-        device: torch.device = torch.device("cuda"),
+        device: Optional[torch.device] = None,
     ):
+        if device is None:
+            device = _get_safe_device()
+        _patch_transformers_bert_compat()
+        config_path = _resolve_config_path(config_path)
         self.model = load_model(model_config_path=config_path, model_checkpoint_path=weights_path).to(device)
         self.caption = caption
         self.box_threshold = box_threshold

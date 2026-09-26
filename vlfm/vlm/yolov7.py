@@ -12,6 +12,16 @@ from vlfm.vlm.detections import ObjectDetections
 
 from .server_wrapper import ServerMixin, host_model, send_request, str_to_image
 
+
+def _get_safe_device() -> torch.device:
+    if torch.cuda.is_available():
+        try:
+            _ = torch.zeros(1, device="cuda")
+            return torch.device("cuda")
+        except Exception as e:
+            print(f"[YOLOv7] CUDA unavailable at runtime, falling back to CPU: {e}")
+    return torch.device("cpu")
+
 sys.path.insert(0, "yolov7/")
 try:
     from models.experimental import attempt_load  # noqa: E402
@@ -30,7 +40,7 @@ sys.path.pop(0)
 class YOLOv7:
     def __init__(self, weights: str, image_size: int = 640, half_precision: bool = True):
         """Loads the model and saves it to a field."""
-        self.device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
+        self.device = _get_safe_device()
         self.half_precision = self.device.type != "cpu" and half_precision
         self.model = attempt_load(weights, map_location=self.device)  # load FP32 model
         stride = int(self.model.stride.max())  # model stride

@@ -9,6 +9,8 @@ defaults:
 policy:
     name: "RealityITMPolicyV2"
     pointnav_policy_path: "data/pointnav_weights.pth"
+    coco_threshold: 0.5
+    non_coco_threshold: 0.4
     depth_image_shape: [212, 240]  # height, width
     pointnav_stop_radius: 0.9
     use_max_confidence: False
@@ -28,4 +30,4 @@ env:
   max_lin_dist: 0.2
   max_ang_dist: 0.523599
   time_step: 0.7
-  goal: "chair"
+  goal: "bed"

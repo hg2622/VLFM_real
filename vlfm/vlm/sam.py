@@ -21,6 +21,16 @@ except ModuleNotFoundError:
     print("Could not import mobile_sam. This is OK if you are only using the client.")
 
 
+def _get_safe_device() -> torch.device:
+    if torch.cuda.is_available():
+        try:
+            _ = torch.zeros(1, device="cuda")
+            return torch.device("cuda")
+        except Exception as e:
+            print(f"[MobileSAM] CUDA unavailable at runtime, falling back to CPU: {e}")
+    return torch.device("cpu")
+
+
 class MobileSAM:
     def __init__(
         self,
@@ -29,7 +39,7 @@ class MobileSAM:
         device: Optional[Any] = None,
     ) -> None:
         if device is None:
-            device = torch.device("cuda") if torch.cuda.is_available() else "cpu"
+            device = _get_safe_device()
         self.device = device
 
         mobile_sam = sam_model_registry[model_type](checkpoint=sam_checkpoint)

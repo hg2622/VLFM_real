@@ -176,6 +176,20 @@ class ObstacleMap(BaseMap):
         # new_explored_area = cv2.dilate(new_explored_area, np.ones((3, 3), np.uint8), iterations=1)
         self.explored_area[new_explored_area > 0] = 1
         self.explored_area[self._navigable_map == 0] = 0
+
+        # Fallback: if fog-of-war produced no explored pixels (common in open
+        # spaces / contour-free views), reveal a local radius around the robot
+        # so frontier extraction can continue.
+        if np.count_nonzero(self.explored_area) == 0:
+            fallback = np.zeros_like(self.explored_area, dtype=np.uint8)
+            radius_px = int(max_depth * self.pixels_per_meter)
+            cv2.circle(fallback, tuple(agent_px_clipped), radius_px, 1, -1)
+            self.explored_area[(fallback > 0) & (self._navigable_map > 0)] = 1
+            print(
+                f"[OBSTACLE_MAP.update_map] fallback_reveal_px={np.count_nonzero(fallback)} "
+                f"total_explored_after_fallback={np.count_nonzero(self.explored_area)}"
+            )
+
         total_explored = np.count_nonzero(self.explored_area)
         print(
             f"[OBSTACLE_MAP.update_map] total_explored={total_explored}"
@@ -191,6 +205,88 @@ class ObstacleMap(BaseMap):
         print(
             f"[OBSTACLE_MAP.update_map] frontiers_px_count={len(self._frontiers_px)}"
         )
+
+    def update_map_from_global_cloud(
+        self,
+        point_cloud_episodic_frame: np.ndarray,
+        robot_xy: np.ndarray,
+        robot_heading: float,
+        max_depth: float,
+        fov_deg: float = 360.0,
+        explore: bool = True,
+        update_obstacles: bool = True,
+    ) -> None:
+        """Updates the obstacle map directly from a global-frame point cloud.
+
+        Args:
+            point_cloud_episodic_frame: Nx3 cloud in episodic/map frame.
+            robot_xy: Current robot position in episodic/map frame.
+            robot_heading: Current robot yaw in radians.
+            max_depth: Sensor range used for fog-of-war ray length.
+            fov_deg: Horizontal field of view for explored-area update.
+        """
+        if update_obstacles and point_cloud_episodic_frame is not None and len(point_cloud_episodic_frame) > 0:
+            obstacle_cloud = filter_points_by_height(
+                point_cloud_episodic_frame,
+                self._min_height,
+                self._max_height,
+            )
+
+            if len(obstacle_cloud) > 0:
+                xy_points = obstacle_cloud[:, :2]
+                pixel_points = self._xy_to_px(xy_points)
+                pixel_points[:, 0] = np.clip(pixel_points[:, 0], 0, self._map.shape[1] - 1)
+                pixel_points[:, 1] = np.clip(pixel_points[:, 1], 0, self._map.shape[0] - 1)
+                self._map[pixel_points[:, 1], pixel_points[:, 0]] = 1
+
+            self._navigable_map = 1 - cv2.dilate(
+                self._map.astype(np.uint8),
+                self._navigable_kernel,
+                iterations=1,
+            ).astype(bool)
+
+        if not explore:
+            return
+
+        agent_pixel_location = self._xy_to_px(robot_xy.reshape(1, 2))[0]
+        agent_px_clipped = np.array(
+            [
+                np.clip(agent_pixel_location[0], 0, self._map.shape[1] - 1),
+                np.clip(agent_pixel_location[1], 0, self._map.shape[0] - 1),
+            ],
+            dtype=int,
+        )
+
+        new_explored_area = reveal_fog_of_war(
+            top_down_map=self._navigable_map.astype(np.uint8),
+            current_fog_of_war_mask=self.explored_area.astype(np.uint8),
+            current_point=agent_px_clipped[::-1],
+            current_angle=-robot_heading,
+            fov=fov_deg,
+            max_line_len=max_depth * self.pixels_per_meter,
+        )
+
+        self.explored_area[new_explored_area > 0] = 1
+        self.explored_area[self._navigable_map == 0] = 0
+
+        # Same fallback as depth path: keep exploration alive when fog-of-war
+        # update returns no new pixels.
+        if np.count_nonzero(self.explored_area) == 0:
+            fallback = np.zeros_like(self.explored_area, dtype=np.uint8)
+            radius_px = int(max_depth * self.pixels_per_meter)
+            cv2.circle(fallback, tuple(agent_px_clipped), radius_px, 1, -1)
+            self.explored_area[(fallback > 0) & (self._navigable_map > 0)] = 1
+            print(
+                f"[OBSTACLE_MAP.update_map_from_global_cloud] "
+                f"fallback_reveal_px={np.count_nonzero(fallback)} "
+                f"total_explored_after_fallback={np.count_nonzero(self.explored_area)}"
+            )
+
+        self._frontiers_px = self._get_frontiers()
+        if len(self._frontiers_px) == 0:
+            self.frontiers = np.array([])
+        else:
+            self.frontiers = self._px_to_xy(self._frontiers_px)
 
     def _get_frontiers(self) -> np.ndarray:
         """Returns the frontiers of the map."""

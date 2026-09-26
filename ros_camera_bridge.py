@@ -154,9 +154,10 @@ class ROSCamera:
         self.node = node
         self.bridge = CvBridge()
 
-        # Latest RGB (no per-stamp cache)
+        # Latest RGB and an RGB cache for timestamp matching.
         self.rgb = None
         self.rgb_stamp_ns = None
+        self.rgb_buf = deque(maxlen=cache_len)
 
         # Latest registered scan (PointCloud2), not synchronized with anything
         self.scan = None
@@ -184,6 +185,7 @@ class ROSCamera:
         with self.lock:
             self.rgb = img
             self.rgb_stamp_ns = stamp_ns
+            self.rgb_buf.append((stamp_ns, img))
 
     def depth_callback(self, msg: Image):
         depth = self.bridge.imgmsg_to_cv2(msg, desired_encoding="passthrough")
@@ -263,6 +265,29 @@ class ROSCameraBridge:
             "best_dt_ms":   (best_dt / 1e6) if best_dt is not None else None,
         }
 
+    def _find_closest_rgb_on_list(self, rgb_list, target_stamp_ns: int, window_ns: int):
+        """Find RGB frame closest to target stamp within window_ns.
+
+        Returns:
+            (rgb_stamp_ns, rgb_img) or None
+        """
+        if not rgb_list:
+            return None
+
+        best = None
+        best_dt = None
+        for r_stamp, r_img in reversed(rgb_list):
+            dt = abs(r_stamp - target_stamp_ns)
+            if best_dt is None or dt < best_dt:
+                best_dt = dt
+                best = (r_stamp, r_img)
+            if dt == 0:
+                break
+
+        if best is None or best_dt is None or best_dt > window_ns:
+            return None
+        return best
+
     def _find_synced_pair_on_lists(self, depth_list, odom_list, window_ns: int):
         """
         Given SNAPSHOT lists, find newest depth matched to closest odom within window.
@@ -312,6 +337,7 @@ class ROSCameraBridge:
             with self.camera.lock:
                 depth_list = list(self.camera.depth_buf)
                 odom_list  = list(self.camera.odom_buf)
+                rgb_list   = list(self.camera.rgb_buf)
                 rgb_img    = self.camera.rgb
                 rgb_ns     = self.camera.rgb_stamp_ns
 
@@ -349,6 +375,14 @@ class ROSCameraBridge:
                 continue
 
             d_stamp, d_img, o_stamp, pos, rot = matched
+
+            # Match RGB to depth stamp to keep detection masks aligned with depth.
+            rgb_matched = self._find_closest_rgb_on_list(rgb_list, d_stamp, window_ns)
+            if rgb_matched is None:
+                if time.time() - t0 > timeout_sec:
+                    raise TimeoutError("Timeout: no RGB frame near matched depth stamp")
+                continue
+            rgb_stamp_ns, rgb_img_from_stamp = rgb_matched
 
             # 3) New-pair gate (avoid returning the same pair twice)
             if d_stamp == self._last_depth_ns and o_stamp == self._last_odom_ns:
@@ -394,7 +428,8 @@ class ROSCameraBridge:
             # )
 
             # Build return payload
-            rgb   = rgb_img_cur.copy() if (copy and rgb_img_cur is not None) else rgb_img_cur
+            rgb_src = rgb_img_from_stamp if rgb_img_from_stamp is not None else rgb_img_cur
+            rgb   = rgb_src.copy() if (copy and rgb_src is not None) else rgb_src
             depth = d_img.copy()        if copy else d_img
             pos_o = pos.copy()          if copy else pos
 
@@ -408,7 +443,7 @@ class ROSCameraBridge:
                 "position": pos_o,
                 "rotation": rot,
                 "stamps": {
-                    "rgb":   rgb_ns_cur,
+                    "rgb":   rgb_stamp_ns,
                     "depth": d_stamp,
                     "odom":  o_stamp,
                     "scan":  scan_ns_cur,

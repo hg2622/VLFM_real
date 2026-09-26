@@ -7,6 +7,12 @@
 
 export VLFM_PYTHON=${VLFM_PYTHON:-`which python`}
 export MOBILE_SAM_CHECKPOINT=${MOBILE_SAM_CHECKPOINT:-data/mobile_sam.pt}
+if [ -z "${VLFM_PYTHON}" ] || [ "${VLFM_PYTHON}" = "$(which python)" ]; then
+	if [ -x "/home/all/miniconda3/envs/vlfm_ros312/bin/python" ]; then
+		export VLFM_PYTHON=/home/all/miniconda3/envs/vlfm_ros312/bin/python
+	fi
+fi
+
 export GROUNDING_DINO_CONFIG=${GROUNDING_DINO_CONFIG:-GroundingDINO/groundingdino/config/GroundingDINO_SwinT_OGC.py}
 export GROUNDING_DINO_WEIGHTS=${GROUNDING_DINO_WEIGHTS:-data/groundingdino_swint_ogc.pth}
 export CLASSES_PATH=${CLASSES_PATH:-vlfm/vlm/classes.txt}
@@ -14,6 +20,14 @@ export GROUNDING_DINO_PORT=${GROUNDING_DINO_PORT:-12181}
 export BLIP2ITM_PORT=${BLIP2ITM_PORT:-12182}
 export SAM_PORT=${SAM_PORT:-12183}
 export YOLOV7_PORT=${YOLOV7_PORT:-12184}
+export SKIP_BLIP2=${SKIP_BLIP2:-1}
+
+if [ ! -f "${GROUNDING_DINO_CONFIG}" ]; then
+	detected_cfg=$(${VLFM_PYTHON} -c "import os, groundingdino; print(os.path.join(os.path.dirname(groundingdino.__file__), 'config', 'GroundingDINO_SwinT_OGC.py'))" 2>/dev/null)
+	if [ -n "${detected_cfg}" ] && [ -f "${detected_cfg}" ]; then
+		export GROUNDING_DINO_CONFIG=${detected_cfg}
+	fi
+fi
 
 session_name=vlm_servers_${RANDOM}
 
@@ -29,7 +43,11 @@ tmux split-window -h -t ${session_name}:0.2
 
 # Run commands in each pane
 tmux send-keys -t ${session_name}:0.0 "${VLFM_PYTHON} -m vlfm.vlm.grounding_dino --port ${GROUNDING_DINO_PORT}" C-m
-tmux send-keys -t ${session_name}:0.1 "${VLFM_PYTHON} -m vlfm.vlm.blip2itm --port ${BLIP2ITM_PORT}" C-m
+if [ "${SKIP_BLIP2}" = "1" ]; then
+	tmux send-keys -t ${session_name}:0.1 "echo 'BLIP2 server skipped (SKIP_BLIP2=1). Start it from your separate env if needed.'" C-m
+else
+	tmux send-keys -t ${session_name}:0.1 "${VLFM_PYTHON} -m vlfm.vlm.blip2itm --port ${BLIP2ITM_PORT}" C-m
+fi
 tmux send-keys -t ${session_name}:0.2 "${VLFM_PYTHON} -m vlfm.vlm.sam --port ${SAM_PORT}" C-m
 tmux send-keys -t ${session_name}:0.3 "${VLFM_PYTHON} -m vlfm.vlm.yolov7 --port ${YOLOV7_PORT}" C-m
 
